@@ -5,6 +5,8 @@ namespace App\Telegram\Commands;
 use Telegram\Bot\Commands\Command;
 use Telegram\Bot\Laravel\Facades\Telegram;
 use Telegram\Bot\Keyboard\Keyboard;
+use App\Models\Client;
+use App\Models\Product;
 
 class RechercheCommand extends Command
 {
@@ -70,15 +72,29 @@ class RechercheCommand extends Command
         $text = "👥 **Résultats de recherche - Clients** :\n\n";
         $text .= "🔍 Recherche : \"*{$query}*\"\n\n";
 
-        if (empty($clients)) {
+        if ($clients->isEmpty()) {
             $text .= "Aucun client trouvé.";
         } else {
             foreach ($clients as $client) {
-                $text .= "🔹 **{$client['nom']}**\n";
-                $text .= "   📧 {$client['email']}\n";
-                $text .= "   📱 {$client['telephone']}\n";
-                $text .= "   💰 CA : {$client['ca_total']}€\n\n";
+                // Calculer le CA total du client
+                $caTotal = $client->invoices()->where('status', 'paid')->sum('total');
+                $nbDevis = $client->quotes()->count();
+                $nbFactures = $client->invoices()->count();
+
+                $text .= "🔹 **{$client->name}**\n";
+                $text .= "   📧 {$client->email}\n";
+                if ($client->phone) {
+                    $text .= "   📱 {$client->phone}\n";
+                }
+                if ($client->address) {
+                    $text .= "   📍 " . substr($client->address, 0, 50) . "...\n";
+                }
+                $text .= "   💰 CA : " . number_format($caTotal, 2) . "€\n";
+                $text .= "   📊 {$nbDevis} devis, {$nbFactures} factures\n\n";
             }
+
+            $totalCA = $clients->sum(fn($client) => $client->invoices()->where('status', 'paid')->sum('total'));
+            $text .= "📈 **Total CA clients trouvés** : " . number_format($totalCA, 2) . "€";
         }
 
         if ($chatId) {
@@ -105,16 +121,27 @@ class RechercheCommand extends Command
         $text = "📦 **Résultats de recherche - Produits** :\n\n";
         $text .= "🔍 Recherche : \"*{$query}*\"\n\n";
 
-        if (empty($products)) {
+        if ($products->isEmpty()) {
             $text .= "Aucun produit trouvé.";
         } else {
             foreach ($products as $product) {
-                $stock_status = $product['stock'] > 0 ? '✅' : '❌';
-                $text .= "🔹 **{$product['nom']}**\n";
-                $text .= "   💰 Prix : {$product['prix']}€\n";
-                $text .= "   📦 Stock : {$product['stock']} {$stock_status}\n";
-                $text .= "   📝 Réf : {$product['reference']}\n\n";
+                $stock_status = $product->stock > 10 ? '✅' : ($product->stock > 0 ? '⚠️' : '❌');
+                $totalVendu = $product->invoiceItems()->sum('quantity');
+
+                $text .= "🔹 **{$product->name}**\n";
+                $text .= "   💰 Prix : " . number_format($product->price, 2) . "€\n";
+                $text .= "   📦 Stock : {$product->stock} {$stock_status}\n";
+                $text .= "   📈 Vendu : {$totalVendu} unités\n";
+                if ($product->description) {
+                    $text .= "   📝 " . substr($product->description, 0, 60) . "...\n";
+                }
+                $text .= "\n";
             }
+
+            $stockTotal = $products->sum('stock');
+            $valeurStock = $products->sum(fn($p) => $p->stock * $p->price);
+            $text .= "📊 **Stock total** : {$stockTotal} unités\n";
+            $text .= "💰 **Valeur stock** : " . number_format($valeurStock, 2) . "€";
         }
 
         if ($chatId) {
@@ -143,31 +170,37 @@ class RechercheCommand extends Command
         $text .= "🔍 Recherche : \"*{$query}*\"\n\n";
 
         // Clients
-        if (!empty($clients)) {
-            $text .= "👥 **Clients** (" . count($clients) . ") :\n";
-            foreach (array_slice($clients, 0, 3) as $client) {
-                $text .= "  • {$client['nom']} - {$client['email']}\n";
+        if ($clients->count() > 0) {
+            $text .= "👥 **Clients** ({$clients->count()}) :\n";
+            foreach ($clients->take(3) as $client) {
+                $caTotal = $client->invoices()->where('status', 'paid')->sum('total');
+                $text .= "  • {$client->name} - {$client->email} - " . number_format($caTotal, 2) . "€\n";
             }
-            if (count($clients) > 3) {
-                $text .= "  • ... et " . (count($clients) - 3) . " autres\n";
+            if ($clients->count() > 3) {
+                $text .= "  • ... et " . ($clients->count() - 3) . " autres\n";
             }
             $text .= "\n";
         }
 
         // Produits
-        if (!empty($products)) {
-            $text .= "📦 **Produits** (" . count($products) . ") :\n";
-            foreach (array_slice($products, 0, 3) as $product) {
-                $text .= "  • {$product['nom']} - {$product['prix']}€\n";
+        if ($products->count() > 0) {
+            $text .= "📦 **Produits** ({$products->count()}) :\n";
+            foreach ($products->take(3) as $product) {
+                $stock_icon = $product->stock > 0 ? '✅' : '❌';
+                $text .= "  • {$product->name} - " . number_format($product->price, 2) . "€ {$stock_icon}\n";
             }
-            if (count($products) > 3) {
-                $text .= "  • ... et " . (count($products) - 3) . " autres\n";
+            if ($products->count() > 3) {
+                $text .= "  • ... et " . ($products->count() - 3) . " autres\n";
             }
             $text .= "\n";
         }
 
-        if (empty($clients) && empty($products)) {
-            $text .= "Aucun résultat trouvé.";
+        if ($clients->isEmpty() && $products->isEmpty()) {
+            $text .= "Aucun résultat trouvé dans la base de données.";
+        } else {
+            $text .= "📈 **Résumé** :\n";
+            $text .= "• {$clients->count()} clients trouvés\n";
+            $text .= "• {$products->count()} produits trouvés";
         }
 
         if ($chatId) {
@@ -189,45 +222,13 @@ class RechercheCommand extends Command
      */
     private function searchClientsInDatabase($query)
     {
-        // Exemple de données - remplacez par votre logique de base de données
-        $allClients = [
-            [
-                'id' => 1,
-                'nom' => 'Jean Dupont',
-                'email' => 'jean.dupont@email.com',
-                'telephone' => '0123456789',
-                'ca_total' => 2500.00
-            ],
-            [
-                'id' => 2,
-                'nom' => 'Marie Martin',
-                'email' => 'marie.martin@email.com',
-                'telephone' => '0987654321',
-                'ca_total' => 1800.50
-            ],
-            [
-                'id' => 3,
-                'nom' => 'Paul Durand',
-                'email' => 'paul.durand@email.com',
-                'telephone' => '0147258369',
-                'ca_total' => 3200.00
-            ]
-        ];
-
-        // Filtrer selon la recherche
-        return array_filter($allClients, function($client) use ($query) {
-            return stripos($client['nom'], $query) !== false ||
-                   stripos($client['email'], $query) !== false ||
-                   stripos($client['telephone'], $query) !== false;
-        });
-
-        // Exemple avec Eloquent :
-        // return \App\Models\Client::where('nom', 'LIKE', "%{$query}%")
-        //     ->orWhere('email', 'LIKE', "%{$query}%")
-        //     ->orWhere('telephone', 'LIKE', "%{$query}%")
-        //     ->limit(10)
-        //     ->get()
-        //     ->toArray();
+        return Client::where('name', 'LIKE', "%{$query}%")
+                    ->orWhere('email', 'LIKE', "%{$query}%")
+                    ->orWhere('phone', 'LIKE', "%{$query}%")
+                    ->orWhere('address', 'LIKE', "%{$query}%")
+                    ->with(['quotes', 'invoices'])
+                    ->limit(10)
+                    ->get();
     }
 
     /**
@@ -235,42 +236,10 @@ class RechercheCommand extends Command
      */
     private function searchProductsInDatabase($query)
     {
-        // Exemple de données - remplacez par votre logique de base de données
-        $allProducts = [
-            [
-                'id' => 1,
-                'nom' => 'Ordinateur portable',
-                'reference' => 'ORD001',
-                'prix' => 899.99,
-                'stock' => 5
-            ],
-            [
-                'id' => 2,
-                'nom' => 'Souris sans fil',
-                'reference' => 'SOU001',
-                'prix' => 29.99,
-                'stock' => 25
-            ],
-            [
-                'id' => 3,
-                'nom' => 'Clavier mécanique',
-                'reference' => 'CLA001',
-                'prix' => 79.99,
-                'stock' => 0
-            ]
-        ];
-
-        // Filtrer selon la recherche
-        return array_filter($allProducts, function($product) use ($query) {
-            return stripos($product['nom'], $query) !== false ||
-                   stripos($product['reference'], $query) !== false;
-        });
-
-        // Exemple avec Eloquent :
-        // return \App\Models\Product::where('nom', 'LIKE', "%{$query}%")
-        //     ->orWhere('reference', 'LIKE', "%{$query}%")
-        //     ->limit(10)
-        //     ->get()
-        //     ->toArray();
+        return Product::where('name', 'LIKE', "%{$query}%")
+                     ->orWhere('description', 'LIKE', "%{$query}%")
+                     ->with(['invoiceItems'])
+                     ->limit(10)
+                     ->get();
     }
 }
